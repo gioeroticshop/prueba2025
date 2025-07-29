@@ -4,8 +4,8 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# Archivos de autenticación de WhatsApp
-auth_info_baileys/
+# Archivos de autenticación de WhatsApp (mantener para persistencia local)
+# auth_info_baileys/
 
 # Variables de entorno
 .env
@@ -22,6 +22,12 @@ logs
 .tmp/
 .temp/
 
+# Mensajes persistidos localmente
+messages.json
+
+# Datos de desarrollo local
+data/
+
 # Sistema operativo
 .DS_Store
 Thumbs.db
@@ -31,3 +37,7 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Archivos de backup
+*.backup
+*.bak
