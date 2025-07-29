@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Bot Monitor</title>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: #25D366;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            margin-bottom: 10px;
+        }
+        
+        .status {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ff4444;
+            animation: pulse 2s infinite;
+        }
+        
+        .status-indicator.connected {
+            background: #00ff44;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+        
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            min-height: 500px;
+        }
+        
+        .qr-section {
+            padding: 30px;
+            background: #f8f9fa;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            border-right: 1px solid #eee;
+        }
+        
+        .qr-code {
+            max-width: 200px;
+            border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+        }
+        
+        .qr-instructions {
+            text-align: center;
+            margin-top: 20px;
+            color: #666;
+        }
+        
+        .connected-message {
+            text-align: center;
+            color: #25D366;
+            font-size: 18px;
+            font-weight: bold;
+        }
+        
+        .messages-section {
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .messages-header {
+            padding-bottom: 15px;
+            border-bottom: 2px solid #eee;
+            margin-bottom: 20px;
+        }
+        
+        .messages-container {
+            flex: 1;
+            overflow-y: auto;
+            max-height: 400px;
+            padding-right: 10px;
+        }
+        
+        .message {
+            background: white;
+            margin-bottom: 15px;
+            padding: 15px;
+            border-radius: 12px;
+            border-left: 4px solid #25D366;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        .message.sent {
+            border-left-color: #128C7E;
+            background: #f0f9ff;
+        }
+        
+        .message.received {
+            border-left-color: #25D366;
+            background: #f8fff8;
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        .message-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .message-from {
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .message-type {
+            font-size: 12px;
+            padding: 4px 8px;
+            border-radius: 20px;
+            color: white;
+        }
+        
+        .message-type.sent {
+            background: #128C7E;
+        }
+        
+        .message-type.received {
+            background: #25D366;
+        }
+        
+        .message-text {
+            color: #555;
+            line-height: 1.4;
+            margin-bottom: 8px;
+        }
+        
+        .message-time {
+            font-size: 12px;
+            color: #999;
+            text-align: right;
+        }
+        
+        .no-messages {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+            padding: 40px;
+        }
+        
+        .stats {
+            background: #f8f9fa;
+            padding: 15px 20px;
+            border-top: 1px solid #eee;
+            display: flex;
+            justify-content: space-around;
+            text-align: center;
+        }
+        
+        .stat-item {
+            color: #666;
+        }
+        
+        .stat-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #25D366;
+            display: block;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+        
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #25D366;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+            
+            .qr-section {
+                border-right: none;
+                border-bottom: 1px solid #eee;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 WhatsApp Bot Monitor</h1>
+            <p>Bot que responde "tus apellidos son casanova" a "hola jairo"</p>
+            <div class="status">
+                <div class="status-indicator" id="statusIndicator"></div>
+                <span id="statusText">Conectando...</span>
+            </div>
+        </div>
+        
+        <div class="main-content">
+            <div class="qr-section">
+                <div id="qrContainer">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        Generando código QR...
+                    </div>
+                </div>
+            </div>
+            
+            <div class="messages-section">
+                <div class="messages-header">
+                    <h3>📱 Mensajes</h3>
+                </div>
+                <div class="messages-container" id="messagesContainer">
+                    <div class="no-messages">
+                        Esperando mensajes...
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="stats">
+            <div class="stat-item">
+                <span class="stat-number" id="totalMessages">0</span>
+                Total
+            </div>
+            <div class="stat-item">
+                <span class="stat-number" id="sentMessages">0</span>
+                Enviados
+            </div>
+            <div class="stat-item">
+                <span class="stat-number" id="receivedMessages">0</span>
+                Recibidos
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let messages = [];
+        
+        // Elementos del DOM
+        const statusIndicator = document.getElementById('statusIndicator');
+        const statusText = document.getElementById('statusText');
+        const qrContainer = document.getElementById('qrContainer');
+        const messagesContainer = document.getElementById('messagesContainer');
+        const totalMessages = document.getElementById('totalMessages');
+        const sentMessages = document.getElementById('sentMessages');
+        const receivedMessages = document.getElementById('receivedMessages');
+        
+        // Eventos del socket
+        socket.on('connect', () => {
+            console.log('Conectado al servidor');
+        });
+        
+        socket.on('connection-status', (data) => {
+            if (data.connected) {
+                statusIndicator.classList.add('connected');
+                statusText.textContent = '✅ WhatsApp Conectado';
+            } else {
+                statusIndicator.classList.remove('connected');
+                statusText.textContent = '❌ WhatsApp Desconectado';
+            }
+        });
+        
+        socket.on('qr', (qrData) => {
+            if (qrData) {
+                qrContainer.innerHTML = `
+                    <img src="${qrData}" alt="QR Code" class="qr-code">
+                    <div class="qr-instructions">
+                        <p><strong>Escanea este código QR</strong></p>
+                        <p>Abre WhatsApp en tu teléfono y escanea el código</p>
+                    </div>
+                `;
+            } else {
+                qrContainer.innerHTML = `
+                    <div class="connected-message">
+                        <div style="font-size: 48px; margin-bottom: 10px;">✅</div>
+                        <p>WhatsApp Conectado</p>
+                        <p style="font-size: 14px; margin-top: 10px;">El bot está activo y listo para responder</p>
+                    </div>
+                `;
+            }
+        });
+        
+        socket.on('messages-history', (messageHistory) => {
+            messages = messageHistory;
+            updateMessagesDisplay();
+            updateStats();
+        });
+        
+        socket.on('new-message', (message) => {
+            messages.unshift(message);
+            if (messages.length > 100) messages.pop();
+            updateMessagesDisplay();
+            updateStats();
+        });
+        
+        function updateMessagesDisplay() {
+            if (messages.length === 0) {
+                messagesContainer.innerHTML = '<div class="no-messages">Esperando mensajes...</div>';
+                return;
+            }
+            
+            const messagesHtml = messages.map(message => `
+                <div class="message ${message.type}">
+                    <div class="message-header">
+                        <span class="message-from">${message.from}</span>
+                        <span class="message-type ${message.type}">${message.type === 'sent' ? 'Enviado' : 'Recibido'}</span>
+                    </div>
+                    <div class="message-text">${message.text}</div>
+                    <div class="message-time">${new Date(message.timestamp).toLocaleString()}</div>
+                </div>
+            `).join('');
+            
+            messagesContainer.innerHTML = messagesHtml;
+        }
+        
+        function updateStats() {
+            const total = messages.length;
+            const sent = messages.filter(m => m.type === 'sent').length;
+            const received = messages.filter(m => m.type === 'received').length;
+            
+            totalMessages.textContent = total;
+            sentMessages.textContent = sent;
+            receivedMessages.textContent = received;
+        }
+        
+        // Auto-scroll para nuevos mensajes
+        socket.on('new-message', () => {
+            setTimeout(() => {
+                messagesContainer.scrollTop = 0;
+            }, 100);
+        });
+    </script>
+</body>
+</html>
