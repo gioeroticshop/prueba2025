@@ -13,6 +13,7 @@
     "socket.io": "^4.7.2",
     "qrcode": "^1.5.3",
     "pino": "^8.15.0"
+    "node-cron": "^3.0.3"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
