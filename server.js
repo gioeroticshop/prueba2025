@@ -248,7 +248,7 @@ async function connectToWhatsApp() {
       auth: state,
       printQRInTerminal: false,
       logger: logger,
-      browser: ["WhatsApp Bot", "Desktop", "1.0.0"],
+      browser: ["WhatsApp Web", "Desktop", "2.2412.54"],
       syncFullHistory: false,
       markOnlineOnConnect: true,
       connectTimeoutMs: 60000,
