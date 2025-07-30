@@ -1,3 +1,4 @@
+// server.js - Versión mejorada con node-cron
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
@@ -6,12 +7,15 @@ const QRCode = require('qrcode');
 const P = require('pino');
 const path = require('path');
 const fs = require('fs');
+const cron = require('node-cron'); // Importar node-cron
+const https = require('https'); // Para hacer requests HTTP
 
 const app = express();
 const server = createServer(app);
 const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
+const RENDER_URL = process.env.RENDER_URL || `https://${process.env.RENDER_EXTERNAL_HOSTNAME}` || null;
 
 // Logger
 const logger = P({ level: 'silent' });
@@ -24,6 +28,15 @@ let messages = [];
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
+// Estadísticas del keep-alive
+let keepAliveStats = {
+  totalPings: 0,
+  successfulPings: 0,
+  failedPings: 0,
+  lastPing: null,
+  lastSuccess: null
+};
+
 // Servir archivos estáticos
 app.use(express.static('public'));
 
@@ -32,15 +45,153 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Endpoint de salud para el keep-alive externo
+// Endpoint de salud mejorado con estadísticas de keep-alive
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
     connected: isConnected, 
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    messages: messages.length,
+    reconnectAttempts: reconnectAttempts,
+    keepAlive: keepAliveStats
   });
 });
+
+// Endpoint para auto-ping (keep-alive interno)
+app.get('/ping', (req, res) => {
+  const pingTime = new Date().toISOString();
+  console.log(`🏓 Self-ping recibido: ${pingTime}`);
+  
+  res.json({
+    pong: true,
+    timestamp: pingTime,
+    uptime: process.uptime(),
+    connected: isConnected,
+    message: 'Bot activo y funcionando'
+  });
+});
+
+// Función de keep-alive interna
+function performSelfPing() {
+  if (!RENDER_URL) {
+    console.log('⚠️ URL de Render no configurada, saltando self-ping');
+    return;
+  }
+
+  const startTime = Date.now();
+  keepAliveStats.totalPings++;
+  keepAliveStats.lastPing = new Date().toISOString();
+
+  console.log(`🚀 Enviando self-ping #${keepAliveStats.totalPings} a ${RENDER_URL}/ping`);
+
+  const req = https.get(`${RENDER_URL}/ping`, { timeout: 10000 }, (res) => {
+    const responseTime = Date.now() - startTime;
+    let data = '';
+
+    res.on('data', (chunk) => {
+      data += chunk;
+    });
+
+    res.on('end', () => {
+      try {
+        const response = JSON.parse(data);
+        keepAliveStats.successfulPings++;
+        keepAliveStats.lastSuccess = new Date().toISOString();
+        
+        console.log(`✅ Self-ping exitoso (${responseTime}ms) - Uptime: ${Math.floor(response.uptime)}s, WhatsApp: ${response.connected ? 'Conectado' : 'Desconectado'}`);
+      } catch (error) {
+        console.log(`⚠️ Self-ping recibido pero respuesta inválida: ${data.substring(0, 100)}`);
+        keepAliveStats.failedPings++;
+      }
+    });
+  });
+
+  req.on('timeout', () => {
+    console.log(`⏰ Timeout en self-ping #${keepAliveStats.totalPings}`);
+    keepAliveStats.failedPings++;
+    req.destroy();
+  });
+
+  req.on('error', (error) => {
+    console.log(`❌ Error en self-ping #${keepAliveStats.totalPings}:`, error.message);
+    keepAliveStats.failedPings++;
+  });
+}
+
+// Configurar tareas cron
+function setupCronJobs() {
+  // Tarea principal: Keep-alive cada 14 minutos
+  cron.schedule('*/14 * * * *', () => {
+    console.log('⏰ Ejecutando tarea cron: Keep-alive automático');
+    performSelfPing();
+  }, {
+    scheduled: true,
+    timezone: "America/Bogota"
+  });
+
+  // Tarea secundaria: Ping adicional cada 10 minutos (redundancia)
+  cron.schedule('*/10 * * * *', () => {
+    console.log('⏰ Ejecutando tarea cron: Ping de respaldo');
+    performSelfPing();
+  }, {
+    scheduled: true,
+    timezone: "America/Bogota"
+  });
+
+  // Tarea de limpieza: Cada hora, limpiar mensajes antiguos
+  cron.schedule('0 * * * *', () => {
+    console.log('⏰ Ejecutando tarea cron: Limpieza de mensajes');
+    
+    // Mantener solo los últimos 50 mensajes en memoria
+    if (messages.length > 50) {
+      const oldLength = messages.length;
+      messages = messages.slice(0, 50);
+      console.log(`🧹 Limpieza completada: ${oldLength} -> ${messages.length} mensajes`);
+      saveMessages();
+    }
+
+    // Resetear estadísticas si han pasado muchos pings
+    if (keepAliveStats.totalPings > 1000) {
+      console.log('🔄 Reseteando estadísticas de keep-alive');
+      keepAliveStats = {
+        totalPings: 0,
+        successfulPings: 0,
+        failedPings: 0,
+        lastPing: null,
+        lastSuccess: null
+      };
+    }
+  }, {
+    scheduled: true,
+    timezone: "America/Bogota"
+  });
+
+  // Tarea de diagnóstico: Cada 6 horas, mostrar estadísticas
+  cron.schedule('0 */6 * * *', () => {
+    const uptime = Math.floor(process.uptime());
+    const hours = Math.floor(uptime / 3600);
+    const minutes = Math.floor((uptime % 3600) / 60);
+    
+    console.log('📊 === REPORTE DE ESTADÍSTICAS ===');
+    console.log(`⏱️ Uptime: ${hours}h ${minutes}m`);
+    console.log(`📱 WhatsApp: ${isConnected ? 'Conectado' : 'Desconectado'}`);
+    console.log(`💬 Mensajes en memoria: ${messages.length}`);
+    console.log(`🔄 Reintentos de conexión: ${reconnectAttempts}`);
+    console.log(`🏓 Keep-alive - Total: ${keepAliveStats.totalPings}, Exitosos: ${keepAliveStats.successfulPings}, Fallidos: ${keepAliveStats.failedPings}`);
+    console.log(`🌐 URL de Render: ${RENDER_URL || 'No configurada'}`);
+    console.log('================================');
+  }, {
+    scheduled: true,
+    timezone: "America/Bogota"
+  });
+
+  console.log('⏰ Tareas cron configuradas:');
+  console.log('   - Keep-alive principal: cada 14 minutos');
+  console.log('   - Keep-alive respaldo: cada 10 minutos');
+  console.log('   - Limpieza de mensajes: cada hora');
+  console.log('   - Reporte de estadísticas: cada 6 horas');
+}
 
 // Función para cargar mensajes persistidos
 function loadMessages() {
@@ -73,7 +224,6 @@ function cleanAuthFiles() {
     const authDir = 'auth_info_baileys';
     if (fs.existsSync(authDir)) {
       const files = fs.readdirSync(authDir);
-      // Si hay archivos pero la conexión falla repetidamente, limpiar
       if (files.length > 0 && reconnectAttempts > 5) {
         console.log('Limpiando archivos de autenticación corruptos...');
         fs.rmSync(authDir, { recursive: true, force: true });
@@ -85,10 +235,9 @@ function cleanAuthFiles() {
   }
 }
 
-// Función para conectar WhatsApp con reintentos mejorados
+// Función para conectar WhatsApp
 async function connectToWhatsApp() {
   try {
-    // Limpiar archivos corruptos si es necesario
     if (reconnectAttempts > 5) {
       cleanAuthFiles();
     }
@@ -102,18 +251,16 @@ async function connectToWhatsApp() {
       browser: ["WhatsApp Bot", "Desktop", "1.0.0"],
       syncFullHistory: false,
       markOnlineOnConnect: true,
-      connectTimeoutMs: 60000, // 60 segundos de timeout
+      connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
-      // Configuraciones adicionales para mejorar la estabilidad
       retryRequestDelayMs: 250,
       maxMsgRetryCount: 5,
-      // Reducir la carga de sincronización
       getMessage: async (key) => {
-        return undefined; // No guardar mensajes en caché
+        return undefined;
       }
     });
 
-    // Manejar eventos de conexión
+    // Eventos de conexión (mantener código existente)
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
       
@@ -135,7 +282,7 @@ async function connectToWhatsApp() {
         
         if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
           reconnectAttempts++;
-          const delay = Math.min(5000 * reconnectAttempts, 30000); // Delay incremental, máximo 30s
+          const delay = Math.min(5000 * reconnectAttempts, 30000);
           
           console.log(`Reintentando conexión en ${delay/1000}s (intento ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
           
@@ -157,11 +304,10 @@ async function connectToWhatsApp() {
         console.log('¡WhatsApp conectado exitosamente!');
         isConnected = true;
         qrCodeData = null;
-        reconnectAttempts = 0; // Reset contador de reintentos
+        reconnectAttempts = 0;
         io.emit('connection-status', { connected: true, reconnecting: false });
         io.emit('qr', null);
         
-        // Guardar credenciales inmediatamente después de conectar
         try {
           await saveCreds();
           console.log('Credenciales guardadas exitosamente');
@@ -174,7 +320,6 @@ async function connectToWhatsApp() {
       }
     });
 
-    // Guardar credenciales cuando se actualicen
     sock.ev.on('creds.update', async () => {
       try {
         await saveCreds();
@@ -184,7 +329,7 @@ async function connectToWhatsApp() {
       }
     });
 
-    // Manejar mensajes entrantes con mejor manejo de errores
+    // Manejar mensajes entrantes (mantener código existente)
     sock.ev.on('messages.upsert', async (m) => {
       try {
         const message = m.messages[0];
@@ -208,7 +353,6 @@ async function connectToWhatsApp() {
           messages.unshift(messageData);
           if (messages.length > 100) messages.pop();
           
-          // Guardar mensajes periódicamente
           if (messages.length % 10 === 0) {
             saveMessages();
           }
@@ -216,10 +360,8 @@ async function connectToWhatsApp() {
           io.emit('new-message', messageData);
           console.log(`Mensaje recibido de ${contactName}: ${messageText}`);
           
-          // Responder a "hola jairo" con manejo de errores mejorado
           if (messageText.toLowerCase().includes('hola jairo')) {
             try {
-              // Verificar que el socket esté conectado antes de enviar
               if (sock && isConnected) {
                 await sock.sendMessage(contact, { text: 'tus apellidos son casanova' });
                 
@@ -236,14 +378,12 @@ async function connectToWhatsApp() {
                 io.emit('new-message', responseData);
                 console.log(`Respuesta enviada a ${contactName}`);
                 
-                // Guardar mensajes después de enviar respuesta
                 saveMessages();
               } else {
                 console.log('Socket no conectado, no se puede enviar mensaje');
               }
             } catch (error) {
               console.error('Error enviando mensaje:', error);
-              // Si el error es de conexión, intentar reconectar
               if (error.message.includes('Connection Closed') || error.message.includes('Socket')) {
                 console.log('Error de conexión detectado, reintentando...');
                 isConnected = false;
@@ -272,7 +412,6 @@ async function connectToWhatsApp() {
 io.on('connection', (socket) => {
   console.log('Cliente conectado a la interfaz web');
   
-  // Enviar estado actual
   socket.emit('connection-status', { connected: isConnected });
   socket.emit('messages-history', messages);
   
@@ -287,22 +426,36 @@ io.on('connection', (socket) => {
 
 // Inicializar aplicación
 async function initApp() {
+  console.log('🚀 Iniciando WhatsApp Bot con node-cron');
+  console.log(`🌐 URL de Render: ${RENDER_URL || 'No detectada automáticamente'}`);
+  
   // Cargar mensajes guardados
   loadMessages();
   
+  // Configurar tareas cron
+  setupCronJobs();
+  
   // Iniciar servidor
   server.listen(PORT, () => {
-    console.log(`Servidor ejecutándose en puerto ${PORT}`);
-    console.log(`Salud del servidor: http://localhost:${PORT}/health`);
+    console.log(`✅ Servidor ejecutándose en puerto ${PORT}`);
+    console.log(`💚 Salud del servidor: http://localhost:${PORT}/health`);
+    console.log(`🏓 Endpoint de ping: http://localhost:${PORT}/ping`);
+    
     connectToWhatsApp();
+    
+    // Realizar primer ping después de 2 minutos
+    if (RENDER_URL) {
+      setTimeout(() => {
+        console.log('🎯 Realizando primer self-ping...');
+        performSelfPing();
+      }, 120000);
+    }
   });
 }
 
 // Manejo de cierre graceful
 process.on('SIGINT', async () => {
   console.log('Cerrando aplicación...');
-  
-  // Guardar mensajes antes de cerrar
   saveMessages();
   
   if (sock) {
@@ -329,17 +482,17 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
-// Keep-alive interno mejorado
+// Keep-alive simple como respaldo (reducido porque ya tenemos cron)
 setInterval(() => {
   const status = {
     timestamp: new Date().toISOString(),
     connected: isConnected,
-    uptime: process.uptime(),
+    uptime: Math.floor(process.uptime()),
     messages: messages.length,
-    attempts: reconnectAttempts
+    keepAlive: keepAliveStats
   };
-  console.log('Keep-alive:', JSON.stringify(status));
-}, 25000);
+  console.log('💓 Heartbeat:', JSON.stringify(status));
+}, 60000); // Cada minuto, menos frecuente
 
 // Iniciar aplicación
 initApp();
