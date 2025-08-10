@@ -1,4 +1,5 @@
-// server.js - Versión corregida con mejor manejo de sesión
+// server.js - Versión corregida con mejor manejo de sesión + API para envío de mensajes
+require('dotenv').config(); // NEW: Cargar variables de entorno
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
@@ -9,6 +10,7 @@ const path = require('path');
 const fs = require('fs');
 const cron = require('node-cron');
 const https = require('https');
+const rateLimit = require('express-rate-limit'); // NEW: Rate limiting
 
 const app = express();
 const server = createServer(app);
@@ -48,6 +50,21 @@ let keepAliveStats = {
 // Variable para evitar múltiples intentos de conexión simultáneos
 let isConnecting = false;
 
+// NEW: Middleware para parsear JSON
+app.use(express.json());
+
+// NEW: Rate limiting - 30 peticiones por minuto por IP
+const messageLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minuto
+  max: 30, // máximo 30 requests por minuto
+  message: {
+    success: false,
+    error: 'Too many requests, please try again later'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // Servir archivos estáticos
 app.use(express.static('public'));
 
@@ -56,12 +73,14 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Endpoint de salud mejorado
+// Endpoint de salud mejorado (UPDATED: formato requerido + información adicional)
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    connected: isConnected, 
-    timestamp: new Date().toISOString(),
+  res.json({
+    success: true, // NEW: formato requerido
+    connected: isConnected, // NEW: formato requerido
+    timestamp: new Date().toISOString(), // NEW: formato requerido
+    // Información adicional del sistema (mantenida)
+    status: 'ok',
     uptime: process.uptime(),
     messages: messages.length,
     reconnectAttempts: reconnectAttempts,
@@ -74,7 +93,7 @@ app.get('/health', (req, res) => {
 app.get('/ping', (req, res) => {
   const pingTime = new Date().toISOString();
   console.log(`🏓 Self-ping recibido: ${pingTime}`);
-  
+
   res.json({
     pong: true,
     timestamp: pingTime,
@@ -82,6 +101,119 @@ app.get('/ping', (req, res) => {
     connected: isConnected,
     message: 'Bot activo y funcionando'
   });
+});
+
+// NEW: Endpoint para enviar mensajes desde aplicaciones externas
+app.post('/send-message', messageLimiter, (req, res) => {
+  try {
+    // Validar autenticación
+    const authHeader = req.headers.authorization;
+    const expectedToken = `Bearer ${process.env.BOT_API_KEY}`;
+
+    if (!authHeader || authHeader !== expectedToken) {
+      console.log('❌ Intento de acceso no autorizado al endpoint /send-message');
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized'
+      });
+    }
+
+    // Validar que el bot esté conectado
+    if (!isConnected || !sock || !sock.user) {
+      console.log('⚠️ Intento de envío de mensaje con WhatsApp desconectado');
+      return res.status(503).json({
+        success: false,
+        error: 'WhatsApp not connected'
+      });
+    }
+
+    // Validar datos del request
+    const { phone, message } = req.body;
+
+    if (!phone || !message) {
+      return res.status(400).json({
+        success: false,
+        error: 'Phone and message are required'
+      });
+    }
+
+    if (typeof phone !== 'string' || typeof message !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'Phone and message must be strings'
+      });
+    }
+
+    if (phone.trim() === '' || message.trim() === '') {
+      return res.status(400).json({
+        success: false,
+        error: 'Phone and message cannot be empty'
+      });
+    }
+
+    // Normalizar número de teléfono
+    let normalizedPhone = phone.replace(/[\s\-\(\)\+]/g, ''); // Eliminar espacios, guiones, paréntesis y +
+
+    // Asegurar formato internacional sin +
+    if (!normalizedPhone.includes('@')) {
+      normalizedPhone = normalizedPhone + '@s.whatsapp.net';
+    }
+
+    console.log(`📤 API: Enviando mensaje a ${phone} (normalizado: ${normalizedPhone})`);
+
+    // Enviar mensaje usando el socket existente
+    sock.sendMessage(normalizedPhone, { text: message.trim() })
+      .then(() => {
+        // Guardar el mensaje enviado en el historial
+        const messageData = {
+          id: Date.now().toString(),
+          from: 'API Bot',
+          contact: normalizedPhone,
+          text: message.trim(),
+          timestamp: new Date(),
+          type: 'sent'
+        };
+
+        messages.unshift(messageData);
+        if (messages.length > 100) messages.pop();
+
+        // Emitir a la interfaz web
+        io.emit('new-message', messageData);
+
+        // Guardar mensajes
+        saveMessages();
+
+        console.log(`✅ API: Mensaje enviado exitosamente a ${phone}`);
+
+        res.json({
+          success: true
+        });
+      })
+      .catch((error) => {
+        console.error('❌ API: Error enviando mensaje:', error);
+
+        // Si hay error de conexión, marcar como desconectado
+        if (error.message.includes('Connection Closed') ||
+            error.message.includes('Socket') ||
+            error.message.includes('ECONNRESET')) {
+          console.log('🔄 API: Error de conexión detectado, marcando como desconectado');
+          isConnected = false;
+          io.emit('connection-status', { connected: false, reconnecting: true });
+        }
+
+        res.status(500).json({
+          success: false,
+          error: 'Failed to send message'
+        });
+      });
+
+  } catch (error) {
+    console.error('❌ API: Error crítico en /send-message:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error'
+    });
+  }
 });
 
 // Función mejorada de keep-alive interna
