@@ -14,6 +14,18 @@ const rateLimit = require('express-rate-limit'); // NEW: Rate limiting
 
 const app = express();
 const server = createServer(app);
+const cors = require('cors'); // 👈 nuevo
+
+// Activar CORS para que Vacun.org pueda llamar a la API
+app.use(cors({
+  origin: [
+    'https://vacun.org',     // dominio producción
+    'http://localhost:5173'  // para pruebas locales
+  ],
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
